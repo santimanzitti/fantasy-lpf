@@ -522,8 +522,8 @@ document.addEventListener('click', async e => {
 });
 document.addEventListener('submit', async e => {
   e.preventDefault();
-  if (e.target.id === 'createform') { const ln = $('#lname').value.trim(), tn = $('#tname').value.trim(); if (!ln || !tn) return; const btn = $('#createbtn'); btn.disabled = true; btn.textContent = 'Creando…'; try { const id = await createLeague(ln, tn); location.hash = '#/liga/' + id; } catch (err) { console.error(err); toast('No se pudo crear la liga.'); btn.disabled = false; btn.textContent = 'Crear liga y sortear mi equipo'; } }
-  if (e.target.id === 'joinform') { const tn = $('#tname').value.trim(); if (!tn) return; const btn = $('#joinbtn'); btn.disabled = true; btn.textContent = 'Sorteando tu plantel…'; try { await joinLeague(tn); tab = 'equipo'; toast('¡Listo! Este es tu plantel inicial.'); } catch (err) { console.error(err); toast(err.message === 'full' ? 'La liga está completa.' : 'No se pudo sumar a la liga.'); btn.disabled = false; btn.textContent = 'Sumarme a la liga'; } }
+  if (e.target.id === 'createform') { const ln = $('#lname').value.trim(), tn = $('#tname').value.trim(); if (!ln || !tn) return; const btn = $('#createbtn'); btn.disabled = true; btn.textContent = 'Creando…'; try { const id = await createLeague(ln, tn); location.hash = '#/liga/' + id; } catch (err) { console.error(err); toast('No se pudo crear la liga (' + (err.code || err.message || err) + ').'); btn.disabled = false; btn.textContent = 'Crear liga y sortear mi equipo'; } }
+  if (e.target.id === 'joinform') { const tn = $('#tname').value.trim(); if (!tn) return; const btn = $('#joinbtn'); btn.disabled = true; btn.textContent = 'Sorteando tu plantel…'; try { await joinLeague(tn); tab = 'equipo'; toast('¡Listo! Este es tu plantel inicial.'); } catch (err) { console.error(err); toast(err.message === 'full' ? 'La liga está completa.' : 'No se pudo sumar a la liga (' + (err.code || err.message) + ').'); btn.disabled = false; btn.textContent = 'Sumarme a la liga'; } }
 });
 document.addEventListener('input', e => {
   const t = e.target;
