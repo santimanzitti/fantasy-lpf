@@ -207,4 +207,13 @@ if (changed) { cal.updated = now; await calRef.set(cal); }
 note(`Listo. ${cand.length} partidos revisados. Calendario con ${Object.keys(cal.matches).length} partidos.`);
 }
 try { await main(); process.exit(0); }
-catch (e) { console.log((gha ? '::error::' : '') + 'La sincronización falló: ' + (e && (e.details || e.message) || e)); process.exit(1); }
+catch (e) {
+  console.log((gha ? '::error::' : '') + 'La sincronización falló: ' + (e && (e.details || e.message) || e));
+  try {
+    const tok = await admin.credential.cert(sa).getAccessToken();
+    const r = await fetch(`https://firestore.googleapis.com/v1/projects/${sa.project_id}/databases`, { headers: { authorization: 'Bearer ' + tok.access_token } });
+    const j = await r.json();
+    note('Bases de Firestore en el proyecto: ' + JSON.stringify((j.databases || []).map(d => ({ name: d.name.split('/').pop(), type: d.type, location: d.locationId }))) + (j.error ? ' · error: ' + j.error.message : ''));
+  } catch (e2) { warn('No se pudieron listar las bases: ' + e2.message); }
+  process.exit(1);
+}
