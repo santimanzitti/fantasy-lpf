@@ -11,9 +11,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
-      - name: Instalar Firebase CLI
-        run: npm install -g firebase-tools@13
-      - name: Publicar hosting y reglas
+      - name: Instalar Firebase CLI y dependencias
+        run: |
+          npm install -g firebase-tools@13
+          npm install --no-audit --no-fund
+      - name: Publicar reglas de seguridad
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: node scripts/deploy-rules.mjs
+      - name: Publicar sitio
         env:
           SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
@@ -22,7 +28,7 @@ jobs:
           export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json"
           PROJECT=$(node -p "JSON.parse(require('fs').readFileSync('.firebaserc','utf8')).projects.default")
           set +e
-          firebase deploy --only hosting,firestore:rules --project "$PROJECT" --non-interactive 2>&1 | tee "$RUNNER_TEMP/out.txt"
+          firebase deploy --only hosting --project "$PROJECT" --non-interactive 2>&1 | tee "$RUNNER_TEMP/out.txt"
           status=${PIPESTATUS[0]}
           if [ "$status" != "0" ]; then echo "::error::$(grep -v '^\s*$' "$RUNNER_TEMP/out.txt" | tail -12 | tr '\n' ' ' | cut -c1-1500)"; exit $status; fi
           echo "::notice::$(grep -iE 'firestore|rules|released|database' "$RUNNER_TEMP/out.txt" | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' ' ' | cut -c1-1500)"
