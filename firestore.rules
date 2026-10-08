@@ -6,6 +6,8 @@ service cloud.firestore {
     // Estadísticas y calendario: los escribe solo la sincronización (con credenciales de servidor).
     match /stats/{id} { allow read: if true; allow write: if false; }
     match /meta/{id}  { allow read: if true; allow write: if false; }
+    // Precios únicos para todas las ligas: los actualiza solo el cierre diario de las 20:00.
+    match /market/{id} { allow read: if true; allow write: if false; }
 
     // Lista de ligas de cada usuario: solo el dueño.
     match /users/{uid} { allow read, write: if signedIn() && request.auth.uid == uid; }

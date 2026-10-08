@@ -1,0 +1,30 @@
+name: Cierre de mercado (20:00)
+on:
+  schedule:
+    - cron: '0 23 * * *'   # 20:00 de Argentina (UTC-3)
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Cerrar aunque ya se haya cerrado hoy'
+        type: boolean
+        default: false
+      dry:
+        description: 'Prueba: calcular sin guardar nada'
+        type: boolean
+        default: false
+concurrency: mercado
+jobs:
+  cierre:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm install --no-audit --no-fund
+      - name: Resolver pujas y actualizar precios
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          FORCE: ${{ inputs.force }}
+          DRY: ${{ inputs.dry }}
+        run: node scripts/market.mjs

@@ -19,6 +19,9 @@ Fantasy gratuito de la Liga Profesional Argentina. Cualquiera entra con su cuent
 | `scripts/sync.mjs` | Sincronización de estadísticas |
 | `.github/workflows/publicar.yml` | Publica el sitio en cada cambio |
 | `.github/workflows/estadisticas.yml` | Corre la sincronización cada 15 minutos |
+| `.github/workflows/mercado.yml` | Cierre diario a las 20:00: pujas de todas las ligas y precio único por jugador |
+| `scripts/market.mjs` | Lógica del cierre diario |
+| `public/engine.js` | Motor compartido por el sitio y los scripts (catálogo, puntos, sorteos) |
 
 ## Puesta en marcha
 

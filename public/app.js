@@ -3,39 +3,12 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import { getFirestore, doc, getDoc, setDoc, updateDoc, onSnapshot, collection, runTransaction, arrayUnion, arrayRemove } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
-// ===================== Catálogo =====================
-const POSN = { P: 'POR', D: 'DEF', M: 'MED', F: 'DEL' };
-const POSL = { P: 'Arquero', D: 'Defensor', M: 'Mediocampista', F: 'Delantero' };
-const TEAMS = window.TEAMS; const FMDATA = window.FMDATA;
-const TEAM = {}; const PL = {}; const ALL = [];
-const slug = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-const FM = {}, FMLAST = {};
-for (const line of FMDATA.split('\n')) { const [n, mi, r] = line.split(';'); if (!n) continue; const k = slug(n); const e = { k, min: +mi || 0, rt: r ? +r : null }; FM[k] = e; const last = k.split('-').pop(); (FMLAST[last] = FMLAST[last] || []).push(e); }
-function fmLookup(name) {
-  const k = slug(name); if (FM[k]) return FM[k];
-  const t = k.split('-'); const list = FMLAST[t[t.length - 1]] || [];
-  const c = list.filter(e => { const f = e.k.split('-')[0]; return f === t[0] || (f[0] === t[0][0] && list.length === 1); });
-  return c.length === 1 ? c[0] : null;
-}
-// Valor fantasy: minutos y nota de 2026; la cotización real suma como máximo 600 mil €.
-function fantasyValue(e, tm) {
-  const min = e ? e.min : 0; const share = Math.min(1, min / 2700);
-  const r = e && e.rt ? e.rt : (min >= 315 ? 6.55 : 6.3);
-  const perf = Math.max(0, Math.min(1, (r - 6.2) / 1.4));
-  const score = Math.pow(share, 1.15) * (0.3 + 0.7 * Math.pow(perf, 1.2));
-  return Math.round((0.15 + 11.5 * Math.pow(score, 1.5) + Math.min(0.06 * (tm || 0), 0.6)) * 100) * 10000;
-}
-for (const t of TEAMS) {
-  TEAM[t.id] = t;
-  for (const [n, p, v] of t.players) {
-    const id = t.id + '-' + slug(n); const fe = fmLookup(n);
-    const pl = { id, name: n, pos: p, base: fantasyValue(fe, v), min: fe ? fe.min : 0, rt: fe ? fe.rt : null, team: t.id };
-    PL[id] = pl; ALL.push(pl);
-  }
-}
+// ===================== Catálogo (motor compartido en engine.js) =====================
+const E = window.ENGINE;
+const { POSN, POSL, TEAMS, TEAM, PL, ALL, slug, fmLookup, RULES, scoreLine, randomSquad, nextClose } = E;
 const FORMATIONS = { '4-3-3': [4, 3, 3], '4-4-2': [4, 4, 2], '3-4-3': [3, 4, 3], '3-5-2': [3, 5, 2], '4-5-1': [4, 5, 1], '5-3-2': [5, 3, 2], '5-4-1': [5, 4, 1] };
 function slotsFor(f) { const [d, m, a] = FORMATIONS[f] || FORMATIONS['4-3-3']; return ['P', ...Array(d).fill('D'), ...Array(m).fill('M'), ...Array(a).fill('F')]; }
-const DEFAULTS = { auto: true, minManagers: 2, intervalHours: 24, startCash: 10000000, marketSize: 14, maxManagers: 16 };
+const DEFAULTS = { startCash: 10000000, marketSize: 14, maxManagers: 16 };
 
 // ===================== Firebase =====================
 const cfg = window.FIREBASE_CONFIG || {};
@@ -48,7 +21,7 @@ let me = null, meUser = null, authReady = false;
 let route = { name: 'home' };
 let myLeagues = [], myLeaguesLoaded = false;
 let league = null, leagueId = null, members = {}, bids = {};
-let stats = {}, calendar = null;
+let stats = {}, calendar = null, gm = null; // gm: precios globales (mismos para todas las ligas)
 let unsubs = [];
 let tab = 'equipo';
 try { const t = localStorage.getItem('fla-tab'); if (t) tab = t; } catch (e) {}
@@ -57,8 +30,8 @@ const ui = { q: '', club: '', pos: '', sort: 'val', limit: 60, mpos: '', valQ: '
 
 const settings = () => ({ ...DEFAULTS, ...(league?.settings || {}) });
 const state = () => league?.state || null;
-const price = id => (state()?.prices?.[id]) || PL[id].base;
-const prevPrice = id => (state()?.prev?.[id]) || price(id);
+const price = id => (gm?.prices?.[id]) || PL[id].base;
+const prevPrice = id => (gm?.prev?.[id]) || price(id);
 const trend = id => { const p = price(id), q = prevPrice(id); return q ? (p - q) / q : 0; };
 const myDoc = () => (me && members[me]) || null;
 const myBids = () => { const b = bids[me]; return b && state() && b.round === state().round ? (b.bids || {}) : {}; };
@@ -98,68 +71,9 @@ function shirt(tid, empty = false) {
 }
 const posTag = p => `<span class="pos pos-${p}">${POSN[p]}</span>`;
 
-// ===================== Puntos automáticos =====================
-// Con estadísticas detalladas (atajadas, despejes, quites, pases clave, tiros, regates) cada puesto suma por lo suyo.
-// Si un partido no trae el detalle, la valoración del partido pesa más para cubrir esa parte.
-const RULES = {
-  goal: { P: 7, D: 6, M: 5, F: 4 }, assist: { P: 3, D: 3, M: 3, F: 3 },
-  cleanSheet: { P: 4, D: 3, M: 1, F: 0 }, conceded: { P: 1, D: 0.5, M: 0, F: 0 },
-  ratingDetailed: { P: 1.5, D: 1.5, M: 1.5, F: 1.5 }, ratingOnly: { P: 3, D: 2.5, M: 2, F: 2 },
-  motm: 2, yellow: -1, red: -3, ownGoal: -2, penMissed: -2, penSaved: 5,
-};
-function scoreLine(pos, s, conceded) {
-  const parts = []; const add = (l, v) => { if (v) parts.push([l, v]); };
-  const min = +s.min || 0; if (min <= 0) return { total: 0, parts };
-  const det = !!s.det;
-  add(min >= 60 ? `Jugó ${min}'` : `Entró ${min}'`, min >= 60 ? 2 : 1);
-  if (s.g) add(s.g > 1 ? `${s.g} goles` : 'Gol', s.g * RULES.goal[pos]);
-  if (s.a) add(s.a > 1 ? `${s.a} asistencias` : 'Asistencia', s.a * RULES.assist[pos]);
-  if (min >= 60 && conceded === 0) add('Valla invicta', RULES.cleanSheet[pos]);
-  if (min >= 60 && conceded > 0) add(`${conceded} gol${conceded > 1 ? 'es' : ''} recibido${conceded > 1 ? 's' : ''}`, -Math.floor(conceded * RULES.conceded[pos]));
-  if (det) {
-    const def = (+s.tkl || 0) + (+s.int || 0);
-    if (pos === 'P') add(`${s.sv || 0} atajadas`, Math.floor((+s.sv || 0) / 2));
-    if (pos === 'D') { add(`${s.clr || 0} despejes`, Math.floor((+s.clr || 0) / 3)); add(`${def} quites e intercepciones`, Math.floor(def / 3)); }
-    if (pos === 'M') { add(`${s.kp || 0} pases clave`, Math.floor((+s.kp || 0) / 2)); add(`${def} quites e intercepciones`, Math.floor(def / 3)); add(`${s.sot || 0} tiros al arco`, Math.floor((+s.sot || 0) / 2)); }
-    if (pos === 'F') { add(`${s.sot || 0} tiros al arco`, Math.floor((+s.sot || 0) / 2)); add(`${s.kp || 0} pases clave`, Math.floor((+s.kp || 0) / 2)); add(`${s.drb || 0} gambetas`, Math.floor((+s.drb || 0) / 3)); }
-  }
-  if (s.r && min >= 10) { const k = (det ? RULES.ratingDetailed : RULES.ratingOnly)[pos]; add(`Valoración ${(+s.r).toFixed(1).replace('.', ',')}`, Math.max(-4, Math.min(6, Math.round((s.r - 6.5) * k)))); }
-  if (s.motm) add('Figura del partido', RULES.motm);
-  if (s.yc) add('Amarilla', RULES.yellow * s.yc);
-  if (s.rc) add('Roja', RULES.red * s.rc);
-  if (s.og) add('Gol en contra', RULES.ownGoal * s.og);
-  if (s.pkm) add('Penal errado', RULES.penMissed * s.pkm);
-  if (s.pks) add('Penal atajado', RULES.penSaved * s.pks);
-  return { total: parts.reduce((a, [, v]) => a + v, 0), parts };
-}
-const FMPOS = { GK: 'P', DF: 'D', MF: 'M', FW: 'F' };
-let byTeam = null;
-function teamIndex() { if (byTeam) return byTeam; byTeam = {}; for (const p of ALL) (byTeam[p.team] = byTeam[p.team] || []).push(p); return byTeam; }
-function resolvePlayer(team, name, fpos) {
-  if (!TEAM[team] || !name) return null;
-  const sn = slug(name); const exact = team + '-' + sn; if (PL[exact]) return exact;
-  const tk = sn.split('-'); const last = tk[tk.length - 1];
-  const list = teamIndex()[team] || [];
-  const cand = list.filter(p => { const pt = slug(p.name).split('-'); const pl = pt[pt.length - 1]; return (pl === last || tk.includes(pl) || pt.includes(last)) && (pt[0] === tk[0] || pt[0][0] === tk[0][0]); });
-  if (cand.length === 1) return cand[0].id;
-  const fe = fmLookup(name);
-  const pl = { id: exact, name, pos: FMPOS[fpos] || 'M', base: fantasyValue(fe, 0), min: fe ? fe.min : 0, rt: fe ? fe.rt : null, team, extra: true };
-  PL[exact] = pl; ALL.push(pl); byTeam = null; return exact;
-}
+// ===================== Puntos (calculados con el motor) =====================
 let ptsByRound = {}, seasonPts = {}, playerLog = {};
-function computePoints() {
-  ptsByRound = {}; seasonPts = {}; playerLog = {};
-  for (const d of Object.values(stats).sort((a, b) => (a.ko || 0) - (b.ko || 0))) {
-    for (const s of (d.players || [])) {
-      const pid = resolvePlayer(s.t, s.n, s.pos); if (!pid) continue;
-      const own = s.t === d.h ? d.hs : d.as_; const opp = s.t === d.h ? d.as_ : d.hs;
-      const sc = scoreLine(PL[pid].pos, s, opp);
-      const R = (ptsByRound[d.r] = ptsByRound[d.r] || {}); R[pid] = (R[pid] || 0) + sc.total;
-      seasonPts[pid] = (seasonPts[pid] || 0) + sc.total;
-      (playerLog[pid] = playerLog[pid] || []).push({ mid: d.id, r: d.r, opp: s.t === d.h ? d.a : d.h, gf: own, ga: opp, ...sc, ts: d.ts || 0 });
-    }
-  }
-}
+function computePoints() { ({ ptsByRound, seasonPts, playerLog } = E.computePoints(stats)); }
 function roundsInfo() {
   const ms = calendar?.matches ? Object.entries(calendar.matches).map(([id, m]) => ({ id, ...m })) : [];
   const R = {};
@@ -303,12 +217,7 @@ async function saveLineup(formation, lineup) {
 }
 
 // ===================== Vista: mercado =====================
-function marketStatus() {
-  const s = settings(); const nM = (league.members || []).length;
-  const next = state() ? (state().lastUpdate || 0) + s.intervalHours * 3600e3 : 0;
-  const enough = nM >= s.minManagers;
-  return { nM, next, enough, auto: s.auto && enough };
-}
+function marketStatus() { return { next: nextClose() }; }
 function countdown(ms) { if (ms <= 0) return 'en instantes'; const h = Math.floor(ms / 3600e3), mi = Math.floor(ms % 3600e3 / 60e3); return h ? `${h} h ${mi} min` : `${mi} min`; }
 function marketView() {
   const st = marketStatus(); const mb = myBids(); const own = owners(); const s = settings();
@@ -316,11 +225,11 @@ function marketView() {
   const bidCount = {}; for (const b of Object.values(bids)) if (b.round === state()?.round) for (const pid of Object.keys(b.bids || {})) bidCount[pid] = (bidCount[pid] || 0) + 1;
   const filt = ui.mpos ? list.filter(pid => PL[pid].pos === ui.mpos) : list;
   const totalBid = Object.values(mb).reduce((a, b) => a + b.a, 0); const m = myDoc();
-  const pill = st.auto ? `<span class="status-pill on"><i></i>Actualización automática</span>` : st.enough ? `<span class="status-pill wait"><i></i>Actualiza el creador de la liga</span>` : `<span class="status-pill wait"><i></i>Faltan ${s.minManagers - st.nM} mánager${s.minManagers - st.nM > 1 ? 'es' : ''} para el modo automático</span>`;
+  const pill = `<span class="status-pill on"><i></i>Todos los días a las 20:00</span>`;
   const lastAw = (state()?.lastAwards || []);
   return `<div class="view">
     <section class="panel pad clock">
-      <div style="flex:1;min-width:200px"><div class="muted small">${st.auto ? 'El mercado cierra y los precios se actualizan en' : 'Mercado abierto · ronda ' + (state()?.round || 1)}</div><div class="big num">${st.auto ? countdown(st.next - Date.now()) : 'Pujas abiertas'}</div></div>
+      <div style="flex:1;min-width:200px"><div class="muted small">Cierran las pujas y se actualizan los precios en</div><div class="big num">${countdown(st.next - Date.now())}</div></div>
       ${pill}
     </section>
     <div class="sec-row"><h2 class="sec">Mercado del día</h2>
@@ -328,7 +237,7 @@ function marketView() {
     ${Object.keys(mb).length ? `<div class="panel pad small" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><span>Tenés <b>${Object.keys(mb).length}</b> puja${Object.keys(mb).length > 1 ? 's' : ''} por <b class="num">${fmtM(totalBid)}</b></span><span class="muted">Disponible después de pujar: <b class="num" style="color:var(--sun)">${fmtM((m.cash || 0) - totalBid)}</b></span></div>` : ''}
     ${filt.length ? `<div class="mgrid">${filt.map(pid => mcard(pid, mb[pid], bidCount[pid] || 0)).join('')}</div>` : `<div class="panel empty">${list.length ? 'No hay jugadores de esa posición hoy.' : 'El mercado se renueva con la próxima actualización.'}</div>`}
     ${lastAw.length ? `<section class="panel"><div class="pad" style="padding-bottom:4px"><h2 class="sec" style="font-size:20px">Fichajes de la última ronda</h2></div><div class="feed">${lastAw.map(a => `<div><span>${esc(members[a.uid]?.name || 'Un mánager')} se quedó con <b>${esc(PL[a.pid]?.name || '')}</b> por <b class="num">${fmtM(a.a)}</b></span></div>`).join('')}</div></section>` : ''}
-    <p class="small muted" style="margin:0">Las pujas son ciegas: nadie ve tu monto. Al cierre gana la oferta más alta y los precios se recalculan con la demanda de la liga y el rendimiento en la cancha.</p>
+    <p class="small muted" style="margin:0">Las pujas son ciegas: nadie ve tu monto. A las 20:00 gana la oferta más alta. Ese mismo momento se recalcula el precio de cada jugador, igual en todas las ligas, según lo que se vendió, fichó y pujó en todo el juego y según su rendimiento en la cancha.</p>
   </div>`;
 }
 function mcard(pid, myb, n) {
@@ -415,35 +324,25 @@ function moreView() {
     </div>`;
   const howto = `<section class="panel pad rules"><h2 class="sec" style="font-size:20px">Cómo funciona</h2>
     <p>Cada mánager arranca con 15 jugadores sorteados y ${fmtM(s.startCash)}. Cada jugador pertenece a un solo mánager de la liga.</p>
-    <p><b>Mercado:</b> en cada ronda salen ${s.marketSize} jugadores libres. Pujás a ciegas (mínimo, su valor actual) y gana la oferta más alta que el mánager pueda pagar. También podés vender a la liga al instante.</p>
-    <p><b>Precios:</b> suben con las pujas, los fichajes y los puntos; bajan con las ventas a la liga y cuando el jugador no suma minutos y su equipo sí jugó.</p>
+    <p><b>Mercado:</b> cada día salen ${s.marketSize} jugadores libres. Pujás a ciegas (mínimo, su valor actual) y a las 20:00 gana la oferta más alta que el mánager pueda pagar. También podés vender a la liga al instante.</p>
+    <p><b>Precios:</b> cada jugador vale lo mismo en todas las ligas. Todos los días a las 20:00 se recalculan con la demanda de todo el juego: cada venta a la liga lo baja, cada fichaje y cada puja lo suben, y también cuentan los puntos que sumó. Si su equipo jugó y él no sumó minutos, baja un 7%. El cambio máximo por día es de 25%, para arriba o para abajo.</p>
     <p><b>Puntos:</b> se cargan solos al terminar cada partido. Suman los 11 que tenías alineados cuando arrancó la fecha.</p>
     ${table}
     <p class="small muted">Para todos: jugar 1 a 59 minutos +1, 60 o más +2 · valoración del partido: (nota − 6,5) × 1,5, entre −4 y +6 · figura +2 · amarilla −1 · roja −3 · gol en contra −2 · penal errado −2 · penal atajado +5. Si un partido no trae el detalle de atajadas o despejes, la valoración pesa el doble.</p></section>`;
-  const vq = slug(ui.valQ); const vlist = vq.length >= 2 ? ALL.filter(p => slug(p.name).includes(vq)).slice(0, 8) : [];
   const admin = isOwner() ? `<div class="grid2">
       <section class="panel pad" style="display:grid;gap:14px">
         <h3 style="margin:0;font-family:var(--display);font-size:20px;text-transform:uppercase">Ajustes de la liga</h3>
-        <p class="small muted" style="margin:0">Ronda ${state()?.round || 1} · ${st.nM} mánager${st.nM === 1 ? '' : 'es'} · última actualización ${state()?.lastUpdate ? 'hace ' + ago(state().lastUpdate) : 'nunca'}</p>
-        <button class="btn gold" data-act="forceupdate">Cerrar mercado y actualizar precios ahora</button>
-        <label class="toggle"><input type="checkbox" id="s-auto" ${s.auto ? 'checked' : ''}> Actualización automática</label>
-        <div class="field"><label for="s-min">Mánagers necesarios para el modo automático</label><input id="s-min" type="number" min="1" max="50" value="${s.minManagers}"></div>
-        <div class="field"><label for="s-int">Horas entre actualizaciones</label><input id="s-int" type="number" min="1" max="168" value="${s.intervalHours}"></div>
+        <p class="small muted" style="margin:0">El mercado y los precios se actualizan solos todos los días a las 20:00, para todas las ligas.</p>
         <div class="field"><label for="s-size">Jugadores por mercado</label><input id="s-size" type="number" min="4" max="30" value="${s.marketSize}"></div>
         <div class="field"><label for="s-cash">Saldo inicial para los que se sumen (€)</label><input id="s-cash" type="number" min="0" step="500000" value="${s.startCash}"></div>
         <div class="field"><label for="s-max">Máximo de mánagers</label><input id="s-max" type="number" min="2" max="30" value="${s.maxManagers}"></div>
         <button class="btn pri" data-act="savesettings">Guardar ajustes</button>
       </section>
-      <section class="panel pad" style="display:grid;gap:12px">
-        <h3 style="margin:0;font-family:var(--display);font-size:20px;text-transform:uppercase">Corregir valores</h3>
-        <input class="select" id="valq" placeholder="Buscar jugador" value="${esc(ui.valQ)}" aria-label="Buscar jugador">
-        <div id="vallist">${valListHTML(vlist)}</div>
       </section></div>` : '';
   return `<div class="view"><a class="back" href="#/">‹ Mis ligas</a>${invite}${admin}${howto}
     <p class="small muted" style="margin:0">Estadísticas: FotMob · ${calendar?.updated ? `última sincronización hace ${ago(calendar.updated)}` : 'esperando la primera sincronización'}.</p>
     <button class="btn danger sm" data-act="logout" style="justify-self:start">Cerrar sesión</button></div>`;
 }
-function valListHTML(vlist) { return vlist.map(p => `<div class="ptsrow" style="grid-template-columns:minmax(0,1fr) 120px auto"><span>${esc(p.name)} <span class="muted small">${esc(TEAM[p.team].short)}</span></span><input data-val="${p.id}" type="number" step="50000" value="${price(p.id)}" aria-label="Valor de ${esc(p.name)}"><button class="btn sm" data-setval="${p.id}">Fijar</button></div>`).join(''); }
 
 // ===================== Modales =====================
 function renderModal() {
@@ -453,8 +352,8 @@ function renderModal() {
   root.innerHTML = `<div class="modal" role="dialog" aria-modal="true">${modal.type === 'player' ? playerModal(modal.pid) : slotModal(modal.slot)}</div>`;
 }
 function spark(pid) {
-  const h = ((state()?.hist?.[pid]) || []).concat([price(pid)]);
-  if (h.length < 2) return `<p class="small muted" style="margin:0">El gráfico de evolución aparece después de la primera actualización del mercado.</p>`;
+  const h = ((gm?.hist?.[pid]) || []).concat([price(pid)]);
+  if (h.length < 2) return `<p class="small muted" style="margin:0">El gráfico de evolución aparece después del primer cierre de mercado de las 20:00.</p>`;
   const W = 300, H = 70, mn = Math.min(...h), mx = Math.max(...h), r = mx - mn || 1;
   const pts = h.map((v, i) => [i / (h.length - 1) * (W - 8) + 4, H - 8 - (v - mn) / r * (H - 18)]);
   const col = h[h.length - 1] >= h[0] ? 'var(--up)' : 'var(--down)';
@@ -503,7 +402,6 @@ document.addEventListener('click', async e => {
   if (b.dataset.player) { modal = { type: 'player', pid: b.dataset.player }; renderModal(); return; }
   if (b.dataset.slot !== undefined) { modal = { type: 'slot', slot: +b.dataset.slot }; renderModal(); return; }
   if (b.dataset.pick !== undefined) { const m = myDoc(); const f = m.formation || '4-3-3'; const lu = currentLineup(m); const pid = b.dataset.pick || null; const j = pid ? lu.indexOf(pid) : -1; if (j >= 0) lu[j] = lu[modal.slot]; lu[modal.slot] = pid; modal = null; renderModal(); await saveLineup(f, lu); return; }
-  if (b.dataset.setval) { const id = b.dataset.setval; const v = Math.round(+document.querySelector(`[data-val="${id}"]`).value); if (!(v >= 50000)) return toast('Ingresá un valor de al menos 50.000 €.'); await setPrice(id, v); return; }
   const act = b.dataset.act; if (!act) return;
   if (act === 'login') { const prov = new GoogleAuthProvider(); try { await signInWithPopup(auth, prov); } catch (err) { if (err.code === 'auth/popup-blocked' || err.code === 'auth/operation-not-supported-in-this-environment') await signInWithRedirect(auth, prov); else if (err.code !== 'auth/popup-closed-by-user') toast('No se pudo iniciar sesión. Probá de nuevo.'); } }
   else if (act === 'logout') { await signOut(auth); location.hash = '#/'; }
@@ -517,7 +415,6 @@ document.addEventListener('click', async e => {
   else if (act === 'sell') { modal.confirmSell = true; renderModal(); }
   else if (act === 'sellcancel') { modal.confirmSell = false; renderModal(); }
   else if (act === 'sellconfirm') await sellPlayer(modal.pid);
-  else if (act === 'forceupdate') { b.disabled = true; b.textContent = 'Actualizando…'; await runMarketUpdate(true); }
   else if (act === 'savesettings') await saveSettings();
 });
 document.addEventListener('submit', async e => {
@@ -528,7 +425,6 @@ document.addEventListener('submit', async e => {
 document.addEventListener('input', e => {
   const t = e.target;
   if (t.id === 'q') { ui.q = t.value; ui.limit = 60; renderPlayerList(); }
-  if (t.id === 'valq') { ui.valQ = t.value; const vq = slug(ui.valQ); $('#vallist').innerHTML = valListHTML(vq.length >= 2 ? ALL.filter(p => slug(p.name).includes(vq)).slice(0, 8) : []); }
   if (t.id === 'bidamt' && modal) modal.bid = +t.value;
 });
 document.addEventListener('change', async e => {
@@ -540,31 +436,9 @@ document.addEventListener('change', async e => {
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && modal) { modal = null; renderModal(); } });
 
 // ===================== Lógica del juego =====================
-const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+const pick = E.pick;
 const pushLog = (st, x) => { st.log = (st.log || []).concat([{ t: Date.now(), x }]).slice(-60); };
-function genMarket(own, n, P = price) {
-  const free = ALL.filter(p => !own[p.id]); const out = new Set(); let guard = 0;
-  while (out.size < Math.min(n, free.length) && guard++ < 5000) { const c = pick(free); if (Math.random() < 0.35 + Math.min(0.65, Math.sqrt(P(c.id) / 4e6))) out.add(c.id); }
-  return [...out];
-}
-function randomSquad(own, exclude, P) {
-  const need = { P: 2, D: 5, M: 5, F: 3 }; let best = null;
-  for (let tries = 0; tries < 80; tries++) {
-    const sq = []; let total = 0, stars = 0, ok = true;
-    for (const [pos, n] of Object.entries(need)) {
-      const pool = ALL.filter(p => p.pos === pos && !own[p.id] && !exclude.has(p.id));
-      for (let k = 0; k < n; k++) {
-        const cands = pool.filter(p => !sq.includes(p.id) && (stars < 1 || P(p.id) <= 3e6));
-        if (!cands.length) { ok = false; break; }
-        const c = pick(cands); sq.push(c.id); total += P(c.id); if (P(c.id) > 3e6) stars++;
-      }
-    }
-    if (!ok) continue;
-    if (total >= 12e6 && total <= 22e6) return sq;
-    if (!best || Math.abs(total - 17e6) < Math.abs(best.t - 17e6)) best = { sq, t: total };
-  }
-  return best ? best.sq : [];
-}
+const genMarket = (own, n, P = price) => E.genMarket(own, n, P);
 function newMember(name, squad, cash) {
   const d = { name, manager: meUser?.displayName || '', cash, squad, formation: '4-3-3', joined: Date.now(), sells: [], firstRound: openFecha() };
   d.lineup = autoXI(d, '4-3-3'); d.lineups = { ['f' + openFecha()]: d.lineup.filter(Boolean) };
@@ -572,9 +446,9 @@ function newMember(name, squad, cash) {
 }
 async function createLeague(name, teamName) {
   const ref = doc(collection(fdb, 'leagues'));
-  const own = {}; const P = id => PL[id].base;
+  const own = {}; const P = price;
   const squad = randomSquad(own, new Set(), P); for (const pid of squad) own[pid] = me;
-  const st = { round: 1, lastUpdate: Date.now(), market: genMarket(own, DEFAULTS.marketSize, P), prices: {}, prev: {}, hist: {}, log: [], lastAwards: [] };
+  const st = { round: 1, lastUpdate: Date.now(), market: genMarket(own, DEFAULTS.marketSize, P), log: [], lastAwards: [] };
   pushLog(st, `Se creó la liga. ${teamName} es el primer equipo.`);
   await runTransaction(fdb, async tx => {
     tx.set(ref, { name, owner: me, ownerName: meUser?.displayName || '', members: [me], createdAt: Date.now(), settings: { ...DEFAULTS }, state: st, owned: own });
@@ -589,7 +463,7 @@ async function joinLeague(teamName) {
     const L = snap.data(); if ((L.members || []).includes(me)) return;
     const s = { ...DEFAULTS, ...(L.settings || {}) };
     if ((L.members || []).length >= s.maxManagers) throw new Error('full');
-    const P = id => L.state?.prices?.[id] || PL[id].base;
+    const P = price;
     const own = { ...(L.owned || {}) };
     const squad = randomSquad(own, new Set(L.state?.market || []), P); for (const pid of squad) own[pid] = me;
     const st = { ...L.state }; pushLog(st, `${teamName} se sumó a la liga.`);
@@ -614,90 +488,20 @@ async function removeBid(pid) {
 async function sellPlayer(pid) {
   try {
     const v = await runTransaction(fdb, async tx => {
-      const [ls, ms] = await Promise.all([tx.get(leagueRef()), tx.get(memberRef())]);
+      const [ls, ms, gs] = await Promise.all([tx.get(leagueRef()), tx.get(memberRef()), tx.get(doc(fdb, 'market', 'global'))]);
       const L = ls.data(), m = ms.data(); if (!(m.squad || []).includes(pid)) throw new Error('notmine');
-      const v = L.state?.prices?.[pid] || PL[pid].base;
+      const v = (gs.exists() && gs.data().prices?.[pid]) || PL[pid].base;
       const own = { ...(L.owned || {}) }; delete own[pid];
       tx.update(leagueRef(), { owned: own });
-      tx.update(memberRef(), { squad: m.squad.filter(x => x !== pid), lineup: (m.lineup || []).map(x => x === pid ? null : x), cash: (m.cash || 0) + v, sells: (m.sells || []).concat([{ pid, r: L.state.round, v }]).slice(-80) });
+      tx.update(memberRef(), { squad: m.squad.filter(x => x !== pid), lineup: (m.lineup || []).map(x => x === pid ? null : x), cash: (m.cash || 0) + v, sells: (m.sells || []).concat([{ pid, r: L.state.round, v, t: Date.now() }]).slice(-80) });
       return v;
     });
     toast(`Vendiste a ${PL[pid].name} por ${fmtM(v)}.`); modal = null; render();
   } catch (e) { console.error(e); toast('No se pudo completar la venta.'); }
 }
-async function setPrice(id, v) {
-  try { await updateDoc(leagueRef(), { ['state.prices.' + id]: v }); toast(`${PL[id].name}: ${fmtFull(v)}.`); } catch (e) { console.error(e); toast('No se pudo guardar el valor.'); }
-}
 async function saveSettings() {
-  const s = { ...settings(), auto: $('#s-auto').checked, minManagers: Math.max(1, +$('#s-min').value || 1), intervalHours: Math.max(1, +$('#s-int').value || 24), marketSize: Math.min(30, Math.max(4, +$('#s-size').value || 14)), startCash: Math.max(0, +$('#s-cash').value || 0), maxManagers: Math.min(30, Math.max(2, +$('#s-max').value || 16)) };
+  const s = { ...settings(), marketSize: Math.min(30, Math.max(4, +$('#s-size').value || 14)), startCash: Math.max(0, +$('#s-cash').value || 0), maxManagers: Math.min(30, Math.max(2, +$('#s-max').value || 16)) };
   try { await updateDoc(leagueRef(), { settings: s }); toast('Ajustes guardados.'); } catch (e) { console.error(e); toast('No se pudieron guardar los ajustes.'); }
-}
-
-// Motor del mercado: una transacción resuelve pujas, mueve precios y abre el mercado nuevo.
-let updating = false;
-async function runMarketUpdate(force) {
-  if (updating) return; updating = true;
-  try {
-    const done = await runTransaction(fdb, async tx => {
-      const ls = await tx.get(leagueRef()); const L = ls.data(); const st = JSON.parse(JSON.stringify(L.state || {}));
-      const s = { ...DEFAULTS, ...(L.settings || {}) };
-      if (!force && Date.now() < (st.lastUpdate || 0) + s.intervalHours * 3600e3 - 30000) return false;
-      const ids = L.members || [];
-      const msnaps = await Promise.all(ids.map(uid => tx.get(doc(fdb, 'leagues', leagueId, 'members', uid))));
-      const bsnaps = await Promise.all(ids.map(uid => tx.get(doc(fdb, 'leagues', leagueId, 'bids', uid))));
-      const mg = {}; msnaps.forEach((d, i) => { if (d.exists()) mg[ids[i]] = d.data(); });
-      const bd = {}; bsnaps.forEach((d, i) => { if (d.exists()) bd[ids[i]] = d.data(); });
-      const P = id => st.prices?.[id] || PL[id].base;
-      const round = st.round || 1;
-      const own = { ...(L.owned || {}) };
-      // 1) Pujas
-      const offers = {}, bidders = {};
-      for (const [uid, b] of Object.entries(bd)) { if (b.round !== round || !mg[uid]) continue;
-        for (const [pid, o] of Object.entries(b.bids || {})) { if (!PL[pid]) continue; bidders[pid] = (bidders[pid] || 0) + 1; if ((st.market || []).includes(pid) && !own[pid]) (offers[pid] = offers[pid] || []).push({ uid, a: o.a, t: o.t || 0 }); } }
-      const budget = {}; for (const [uid, m] of Object.entries(mg)) budget[uid] = m.cash || 0;
-      const order = Object.keys(offers).sort((x, y) => Math.max(...offers[y].map(o => o.a)) - Math.max(...offers[x].map(o => o.a)));
-      const awards = [];
-      for (const pid of order) { const w = offers[pid].sort((x, y) => y.a - x.a || x.t - y.t).find(o => budget[o.uid] >= o.a); if (w) { budget[w.uid] -= w.a; own[pid] = w.uid; awards.push({ pid, uid: w.uid, a: w.a }); } }
-      // 2) Ventas de la ronda
-      const sold = {}; for (const m of Object.values(mg)) for (const x of (m.sells || [])) if (x.r === round) sold[x.pid] = (sold[x.pid] || 0) + 1;
-      // 3) Rendimiento desde la última actualización
-      const perf = {}; const teamsPlayed = new Set();
-      for (const d of Object.values(stats)) if ((d.ts || 0) > (st.lastUpdate || 0)) { teamsPlayed.add(d.h); teamsPlayed.add(d.a); }
-      for (const [pid, Lg] of Object.entries(playerLog)) for (const x of Lg) if (x.ts > (st.lastUpdate || 0)) perf[pid] = (perf[pid] || 0) + x.total;
-      // 4) Precios
-      const prices = {}, prevSlim = {}, hist = st.hist || {}; const won = new Set(awards.map(a => a.pid)); const moves = [], benched = [];
-      for (const p of ALL) {
-        const old = P(p.id);
-        let pct = 0.03 * (bidders[p.id] || 0) + (won.has(p.id) ? 0.02 : 0) - 0.03 * (sold[p.id] || 0) + (own[p.id] ? 0.004 : -0.003);
-        if (perf[p.id] !== undefined) pct += Math.max(-0.08, Math.min(0.15, (perf[p.id] - 4) * 0.012));
-        else if (teamsPlayed.has(p.team)) { pct -= 0.07; if (old >= 2e6) benched.push(p.id); }
-        const ratio = old / p.base; if (ratio > 1.8) pct -= 0.01; if (ratio < 0.5) pct += 0.01;
-        pct = Math.max(-0.15, Math.min(0.2, pct));
-        const nv = Math.max(50000, Math.round(old * (1 + pct) / 1000) * 1000);
-        if (nv !== p.base) prices[p.id] = nv;
-        if (old !== nv) { prevSlim[p.id] = old; moves.push([p.id, (nv - old) / old]); hist[p.id] = (hist[p.id] || []).concat([old]).slice(-14); }
-      }
-      // 5) Aplicar fichajes a cada mánager
-      for (const a of awards) { const m = mg[a.uid]; m.squad = [...new Set((m.squad || []).concat([a.pid]))]; m.cash = (m.cash || 0) - a.a; }
-      for (const uid of new Set(awards.map(a => a.uid))) tx.update(doc(fdb, 'leagues', leagueId, 'members', uid), { squad: mg[uid].squad, cash: mg[uid].cash });
-      const ns = { ...st, round: round + 1, lastUpdate: Date.now(), prices, prev: prevSlim, hist, market: genMarket(own, s.marketSize, id => prices[id] || PL[id].base), lastAwards: awards };
-      for (const a of awards) pushLog(ns, `${mg[a.uid].name} fichó a ${PL[a.pid].name} por ${fmtM(a.a)}.`);
-      for (const [pid, n] of Object.entries(sold)) pushLog(ns, `${PL[pid].name} fue vendido a la liga${n > 1 ? ` (${n} veces)` : ''}.`);
-      const stars = Object.entries(perf).sort((x, y) => y[1] - x[1]).slice(0, 3).filter(x => x[1] >= 8);
-      if (stars.length) pushLog(ns, `Suben por rendimiento: ${stars.map(([id, v]) => `${PL[id].name} (${v} pts)`).join(', ')}.`);
-      if (benched.length) pushLog(ns, `Bajan por no jugar: ${benched.slice(0, 4).map(id => PL[id].name).join(', ')}${benched.length > 4 ? ` y ${benched.length - 4} más` : ''}.`);
-      pushLog(ns, `Cerró la ronda ${round}: ${awards.length} fichaje${awards.length === 1 ? '' : 's'}, nuevo mercado.`);
-      tx.update(leagueRef(), { state: ns, owned: own });
-      return true;
-    });
-    if (force) toast(done ? 'Mercado actualizado.' : 'El mercado ya estaba actualizado.');
-  } catch (e) { console.error(e); if (force) toast('No se pudo actualizar el mercado.'); }
-  finally { updating = false; render(); }
-}
-function autoCheck() {
-  if (!league || !myDoc()) return;
-  const st = marketStatus();
-  if (st.auto && Date.now() >= st.next) runMarketUpdate(false);
 }
 
 // ===================== Navegación y suscripciones =====================
@@ -737,5 +541,6 @@ if (configured) {
   // Estadísticas y calendario compartidos por todas las ligas
   onSnapshot(collection(fdb, 'stats'), q => { stats = {}; q.docs.forEach(d => stats[d.id] = d.data()); computePoints(); render(); }, err => console.error(err));
   onSnapshot(doc(fdb, 'meta', 'calendar'), s => { calendar = s.exists() ? s.data() : null; render(); }, err => console.error(err));
-  setTimeout(autoCheck, 5000); setInterval(() => { autoCheck(); if (tab === 'mercado' && !modal && route.name === 'league') render(); }, 60000);
+  onSnapshot(doc(fdb, 'market', 'global'), s => { gm = s.exists() ? s.data() : null; render(); }, err => console.error(err));
+  setInterval(() => { if (tab === 'mercado' && !modal && route.name === 'league') render(); }, 60000);
 } else render();
