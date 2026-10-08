@@ -160,6 +160,7 @@ async function readMatch(id) {
 
 // ---------- Corrida ----------
 async function main() {
+  note(`Proyecto de la clave: ${sa.project_id} · cuenta: ${sa.client_email}`);
 const calRef = db.doc('meta/calendar');
 const snap = await calRef.get();
 let cal = snap.exists ? snap.data() : JSON.parse(readFileSync(new URL('./calendar-seed.json', import.meta.url))).valueOf();
