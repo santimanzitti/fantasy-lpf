@@ -159,6 +159,7 @@ async function readMatch(id) {
 }
 
 // ---------- Corrida ----------
+async function main() {
 const calRef = db.doc('meta/calendar');
 const snap = await calRef.get();
 let cal = snap.exists ? snap.data() : JSON.parse(readFileSync(new URL('./calendar-seed.json', import.meta.url))).valueOf();
@@ -203,4 +204,6 @@ for (const [id, m] of cand) {
 
 if (changed) { cal.updated = now; await calRef.set(cal); }
 note(`Listo. ${cand.length} partidos revisados. Calendario con ${Object.keys(cal.matches).length} partidos.`);
-process.exit(0);
+}
+try { await main(); process.exit(0); }
+catch (e) { console.log((gha ? '::error::' : '') + 'La sincronización falló: ' + (e && (e.details || e.message) || e)); process.exit(1); }
