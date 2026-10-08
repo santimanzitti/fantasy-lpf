@@ -1,0 +1,7 @@
+{
+  "name": "fantasy-lpf",
+  "private": true,
+  "type": "module",
+  "scripts": { "sync": "node scripts/sync.mjs" },
+  "dependencies": { "firebase-admin": "^12.1.0" }
+}
