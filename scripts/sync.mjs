@@ -7,6 +7,9 @@ const sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
 if (!sa.project_id) { console.error('Falta el secreto FIREBASE_SERVICE_ACCOUNT.'); process.exit(1); }
 admin.initializeApp({ credential: admin.credential.cert(sa) });
 const db = admin.firestore();
+const gha = !!process.env.GITHUB_ACTIONS;
+const note = m => console.log((gha ? '::notice::' : '') + m);
+const warn = m => console.log((gha ? '::warning::' : '') + m);
 
 const LEAGUE_ID = 112; // Liga Profesional Argentina en FotMob
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
@@ -171,8 +174,8 @@ if (!cal.lastScan || now - cal.lastScan > 6 * 3600e3) {
       if (!cur) cal.matches[id] = { ...m, st: m.st === 'done?' ? 'pend' : m.st };
       else if (cur.st !== 'done') { cal.matches[id] = { ...cur, k: m.k || cur.k, r: cur.r || m.r, h: cur.h || m.h, a: cur.a || m.a }; }
     }
-    console.log(`Calendario: ${Object.keys(found).length} partidos encontrados en FotMob.`);
-  } catch (e) { console.warn('No se pudo leer el fixture de la liga:', e.message); }
+    note(`Calendario: ${Object.keys(found).length} partidos encontrados en FotMob.`);
+  } catch (e) { warn('No se pudo leer el fixture de la liga: ' + e.message); }
   cal.lastScan = now; changed = true;
 }
 
@@ -184,20 +187,20 @@ const cand = Object.entries(cal.matches)
 for (const [id, m] of cand) {
   try {
     const d = await readMatch(id);
-    if (d.leagueOk === false && d.r === null) { delete cal.matches[id]; changed = true; console.log(`${id}: no es de la Liga Profesional, se quita.`); continue; }
+    if (d.leagueOk === false && d.r === null) { delete cal.matches[id]; changed = true; note(`${id}: no es de la Liga Profesional, se quita.`); continue; }
     const wasDone = m.st === 'done';
     cal.matches[id] = { ...m, r: m.r || d.r, h: m.h || d.h, a: m.a || d.a, k: d.k || m.k, st: d.st, chk: now };
     if (d.st === 'done') {
       cal.matches[id].done = m.done || now; if (wasDone) cal.matches[id].final = true;
       await db.doc(`stats/m${id}`).set({ id: +id, r: cal.matches[id].r, h: cal.matches[id].h, a: cal.matches[id].a, hs: d.hs, as_: d.as_, ko: cal.matches[id].k, ts: wasDone ? (m.ts || now) : now, src: 'fotmob', det: d.det, players: d.players });
       if (!wasDone) cal.matches[id].ts = now;
-      console.log(`${id}: ${d.h} ${d.hs}-${d.as_} ${d.a} · ${d.players.length} jugadores${d.det ? ' con estadísticas detalladas' : ' (solo valoración)'}.`);
-    } else console.log(`${id}: estado ${d.st}.`);
+      note(`${id}: ${d.h} ${d.hs}-${d.as_} ${d.a} · ${d.players.length} jugadores${d.det ? ' con estadísticas detalladas' : ' (solo valoración)'}.`);
+    } else note(`${id}: estado ${d.st}.`);
     changed = true;
-  } catch (e) { console.warn(`${id}: ${e.message}`); }
+  } catch (e) { warn(`${id}: ${e.message}`); }
   await new Promise(r => setTimeout(r, 1500));
 }
 
 if (changed) { cal.updated = now; await calRef.set(cal); }
-console.log(`Listo. ${cand.length} partidos revisados.`);
+note(`Listo. ${cand.length} partidos revisados. Calendario con ${Object.keys(cal.matches).length} partidos.`);
 process.exit(0);
