@@ -25,3 +25,4 @@ jobs:
           firebase deploy --only hosting,firestore:rules --project "$PROJECT" --non-interactive 2>&1 | tee "$RUNNER_TEMP/out.txt"
           status=${PIPESTATUS[0]}
           if [ "$status" != "0" ]; then echo "::error::$(grep -v '^\s*$' "$RUNNER_TEMP/out.txt" | tail -12 | tr '\n' ' ' | cut -c1-1500)"; exit $status; fi
+          echo "::notice::$(grep -iE 'firestore|rules|released|database' "$RUNNER_TEMP/out.txt" | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' ' ' | cut -c1-1500)"
