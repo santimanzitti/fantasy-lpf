@@ -20,7 +20,7 @@ jobs:
           if [ -z "$SA" ]; then echo "::error::Falta el secreto FIREBASE_SERVICE_ACCOUNT en Settings > Secrets and variables > Actions."; exit 1; fi
           printf '%s' "$SA" > "$RUNNER_TEMP/sa.json"
           export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json"
-          PROJECT=$(node -p "require('./.firebaserc').projects.default")
+          PROJECT=$(node -p "JSON.parse(require('fs').readFileSync('.firebaserc','utf8')).projects.default")
           set +e
           firebase deploy --only hosting,firestore:rules --project "$PROJECT" --non-interactive 2>&1 | tee "$RUNNER_TEMP/out.txt"
           status=${PIPESTATUS[0]}
