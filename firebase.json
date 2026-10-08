@@ -6,5 +6,5 @@
       { "source": "**/*.@(js|html)", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }
     ]
   },
-  "firestore": { "rules": "firestore.rules" }
+  "firestore": [{ "database": "default", "rules": "firestore.rules" }]
 }

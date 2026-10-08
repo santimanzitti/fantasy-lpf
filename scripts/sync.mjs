@@ -1,12 +1,14 @@
 // Sincroniza calendario y estadísticas de la Liga Profesional desde FotMob hacia Firestore.
 // Corre en GitHub Actions cada 15 minutos (ver .github/workflows/estadisticas.yml).
 import admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
 import { readFileSync } from 'node:fs';
 
 const sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
 if (!sa.project_id) { console.error('Falta el secreto FIREBASE_SERVICE_ACCOUNT.'); process.exit(1); }
 admin.initializeApp({ credential: admin.credential.cert(sa) });
-const db = admin.firestore();
+const DATABASE_ID = process.env.FIRESTORE_DATABASE || 'default'; // la base del proyecto se llama "default"
+const db = getFirestore(admin.app(), DATABASE_ID);
 const gha = !!process.env.GITHUB_ACTIONS;
 const note = m => console.log((gha ? '::notice::' : '') + m);
 const warn = m => console.log((gha ? '::warning::' : '') + m);

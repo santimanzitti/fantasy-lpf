@@ -41,7 +41,7 @@ const DEFAULTS = { auto: true, minManagers: 2, intervalHours: 24, startCash: 100
 const cfg = window.FIREBASE_CONFIG || {};
 const configured = cfg.apiKey && !String(cfg.apiKey).includes('COMPLETAR');
 let auth = null, fdb = null;
-if (configured) { const app = initializeApp(cfg); auth = getAuth(app); fdb = getFirestore(app); }
+if (configured) { const app = initializeApp(cfg); auth = getAuth(app); fdb = getFirestore(app, cfg.databaseId || '(default)'); }
 
 // ===================== Estado =====================
 let me = null, meUser = null, authReady = false;

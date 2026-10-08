@@ -6,5 +6,6 @@ window.FIREBASE_CONFIG = {
   projectId: "liga-argentina-fantasy",
   storageBucket: "liga-argentina-fantasy.firebasestorage.app",
   messagingSenderId: "194090421637",
-  appId: "1:194090421637:web:f2a8ee614a818a96a6c8ec"
+  appId: "1:194090421637:web:f2a8ee614a818a96a6c8ec",
+  databaseId: "default" // nombre de la base de Firestore del proyecto
 };
