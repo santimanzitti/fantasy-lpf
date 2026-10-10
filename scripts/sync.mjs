@@ -205,6 +205,12 @@ for (const [id, m] of cand) {
   await new Promise(r => setTimeout(r, 1500));
 }
 
+// Inicio de cada fecha = primer partido no postergado. Las reglas de seguridad lo usan para bloquear el 11.
+const rounds = {};
+for (const m of Object.values(cal.matches)) if (m.r && m.k && m.st !== 'post') rounds[m.r] = Math.min(rounds[m.r] || Infinity, m.k);
+if (JSON.stringify(rounds) !== JSON.stringify(cal.rounds || {})) { cal.rounds = rounds; changed = true; }
+const prox = Object.entries(rounds).filter(([, k]) => k > now).sort((a, b) => a[1] - b[1]).slice(0, 2);
+if (prox.length) note('Próximos cierres de 11: ' + prox.map(([r, k]) => `fecha ${r} ${new Date(k - 3 * 3600e3).toISOString().slice(0, 16).replace('T', ' ')} (hora Argentina)`).join(' · '));
 if (changed) { cal.updated = now; await calRef.set(cal); }
 note(`Listo. ${cand.length} partidos revisados. Calendario con ${Object.keys(cal.matches).length} partidos.`);
 }

@@ -77,10 +77,14 @@ function computePoints() { ({ ptsByRound, seasonPts, playerLog } = E.computePoin
 function roundsInfo() {
   const ms = calendar?.matches ? Object.entries(calendar.matches).map(([id, m]) => ({ id, ...m })) : [];
   const R = {};
-  for (const m of ms) { const r = (R[m.r] = R[m.r] || { r: m.r, list: [], first: Infinity }); r.list.push(m); if (m.k) r.first = Math.min(r.first, m.k); }
+  for (const m of ms) { const r = (R[m.r] = R[m.r] || { r: m.r, list: [], first: Infinity }); r.list.push(m); if (m.k && m.st !== 'post') r.first = Math.min(r.first, m.k); }
+  for (const r of Object.values(R)) if (calendar?.rounds?.[r.r]) r.first = calendar.rounds[r.r];
   return Object.values(R).sort((a, b) => a.r - b.r);
 }
 function openFecha() { const rs = roundsInfo(); const now = Date.now(); const nx = rs.find(r => r.first > now && r.list.some(m => m.st !== 'done')); return nx ? nx.r : (rs.length ? rs[rs.length - 1].r + 1 : 1); }
+function roundStart(n) { const r = roundsInfo().find(x => x.r === n); return r && isFinite(r.first) ? r.first : null; }
+// Fecha en juego: ya arrancó y le quedan partidos (su 11 está congelado)
+function playingFecha() { const now = Date.now(); const r = roundsInfo().filter(x => x.first <= now && x.list.some(m => m.st !== 'done' && m.st !== 'post')).pop(); return r ? r.r : null; }
 function liveFecha() { const rs = roundsInfo(); const now = Date.now(); const started = rs.filter(r => r.first <= now); const cur = started.slice().reverse().find(r => r.list.some(m => m.st !== 'done' && m.st !== 'post')); return cur ? cur.r : (started.length ? started[started.length - 1].r : openFecha()); }
 
 // ===================== UI básica =====================
@@ -181,7 +185,8 @@ function teamView() {
   const bench = (m.squad || []).filter(pid => PL[pid] && !inXI.has(pid)).sort((x, y) => 'PDMF'.indexOf(PL[x].pos) - 'PDMF'.indexOf(PL[y].pos) || price(y) - price(x));
   const pts = myPoints(m);
   return `<div class="view">
-    <div class="sec-row"><h2 class="sec">Mi equipo</h2><span class="muted small">Esta alineación juega la fecha ${openFecha()}${pts.total ? ` · ${pts.total} pts en total` : ''}</span></div>
+    <div class="sec-row"><h2 class="sec">Mi equipo</h2><span class="muted small">${lockLine()}${pts.total ? ` · ${pts.total} pts en total` : ''}</span></div>
+    ${lockedHTML(m)}
     <div class="pitch-wrap">
       <div class="team-tools">
         <label class="small muted" for="formation">Formación</label>
@@ -199,6 +204,20 @@ function teamView() {
     </section>
   </div>`;
 }
+function lockLine() {
+  const f = openFecha(); const k = roundStart(f);
+  if (!k) return `Esta alineación juega la fecha ${f}`;
+  const when = new Intl.DateTimeFormat('es-AR', { weekday: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(k);
+  return `Fecha ${f}: podés cambiar el 11 hasta el ${when} (${countdown(k - Date.now())})`;
+}
+// El 11 congelado de la fecha en juego, con lo que va sumando cada uno
+function lockedHTML(m) {
+  const n = playingFecha(); if (!n || n < (m.firstRound || 0)) return '';
+  const xi = lineupFor(m, n); const pt = ptsByRound[n] || {}; const squad = new Set(m.squad || []);
+  const total = xi.reduce((a, pid) => a + (+pt[pid] || 0), 0);
+  const rows = xi.filter(pid => PL[pid]).sort((x, y) => 'PDMF'.indexOf(PL[x].pos) - 'PDMF'.indexOf(PL[y].pos)).map(pid => `<div class="lk">${posTag(PL[pid].pos)}<span class="lkn">${esc(PL[pid].name)}${squad.has(pid) ? '' : ' <span class="chip">vendido</span>'}</span><b class="num ${pt[pid] === undefined ? 'flat' : pt[pid] >= 0 ? 'up' : 'down'}">${pt[pid] === undefined ? '–' : pt[pid]}</b></div>`).join('');
+  return `<section class="panel"><div class="pad sec-row" style="padding-bottom:6px"><h2 class="sec" style="font-size:20px">Fecha ${n} en juego</h2><span class="small muted">Tu 11 quedó guardado al arrancar · <b class="num">${total} pts</b></span></div><div class="lklist">${rows || '<div class="empty">No tenías jugadores alineados para esta fecha.</div>'}</div></section>`;
+}
 function prow(pid, extra = '') {
   const p = PL[pid]; const t = trend(pid);
   if (seasonPts[pid] !== undefined) extra += `<span class="chip num">${seasonPts[pid]} pts</span>`;
@@ -212,13 +231,14 @@ function autoXI(m, f) {
 const memberRef = (uid = me) => doc(fdb, 'leagues', leagueId, 'members', uid);
 const leagueRef = (id = leagueId) => doc(fdb, 'leagues', id);
 async function saveLineup(formation, lineup) {
-  try { await updateDoc(memberRef(), { formation, lineup, ['lineups.f' + openFecha()]: lineup.filter(Boolean) }); }
-  catch (e) { console.error(e); toast('No se pudo guardar la alineación.'); }
+  const f = openFecha();
+  try { await updateDoc(memberRef(), { formation, lineup, lineupRound: f, ['lineups.f' + f]: lineup.filter(Boolean) }); }
+  catch (e) { console.error(e); toast(e.code === 'permission-denied' ? `La fecha ${f} ya arrancó y su 11 quedó guardado. Recargá la página para armar el de la fecha siguiente.` : 'No se pudo guardar la alineación.'); }
 }
 
 // ===================== Vista: mercado =====================
 function marketStatus() { return { next: nextClose() }; }
-function countdown(ms) { if (ms <= 0) return 'en instantes'; const h = Math.floor(ms / 3600e3), mi = Math.floor(ms % 3600e3 / 60e3); return h ? `${h} h ${mi} min` : `${mi} min`; }
+function countdown(ms) { if (ms <= 0) return 'en instantes'; const d = Math.floor(ms / 864e5), h = Math.floor(ms % 864e5 / 3600e3), mi = Math.floor(ms % 3600e3 / 60e3); return d ? `${d} d ${h} h` : h ? `${h} h ${mi} min` : `${mi} min`; }
 function marketView() {
   const st = marketStatus(); const mb = myBids(); const own = owners(); const s = settings();
   const list = (state()?.market || []).filter(pid => PL[pid] && !own[pid]);
@@ -493,7 +513,8 @@ async function sellPlayer(pid) {
       const v = (gs.exists() && gs.data().prices?.[pid]) || PL[pid].base;
       const own = { ...(L.owned || {}) }; delete own[pid];
       tx.update(leagueRef(), { owned: own });
-      tx.update(memberRef(), { squad: m.squad.filter(x => x !== pid), lineup: (m.lineup || []).map(x => x === pid ? null : x), cash: (m.cash || 0) + v, sells: (m.sells || []).concat([{ pid, r: L.state.round, v, t: Date.now() }]).slice(-80) });
+      const lineup = (m.lineup || []).map(x => x === pid ? null : x); const f = openFecha();
+      tx.update(memberRef(), { squad: m.squad.filter(x => x !== pid), lineup, lineupRound: f, ['lineups.f' + f]: lineup.filter(Boolean), cash: (m.cash || 0) + v, sells: (m.sells || []).concat([{ pid, r: L.state.round, v, t: Date.now() }]).slice(-80) });
       return v;
     });
     toast(`Vendiste a ${PL[pid].name} por ${fmtM(v)}.`); modal = null; render();

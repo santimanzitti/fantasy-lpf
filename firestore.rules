@@ -35,10 +35,22 @@ service cloud.firestore {
       allow delete: if signedIn() && resource.data.owner == request.auth.uid;
 
       match /members/{uid} {
+        // El 11 de cada fecha (lineups.fN) solo se puede guardar ANTES de que arranque el primer partido de esa fecha.
+        // La hora la pone el servidor (request.time), no el teléfono de cada uno.
+        function lineupOk() {
+          let keys = request.resource.data.get('lineups', {}).diff(resource.data.get('lineups', {})).affectedKeys();
+          let r = request.resource.data.get('lineupRound', 0);
+          let rounds = get(/databases/$(database)/documents/meta/calendar).data.get('rounds', {});
+          return keys.size() == 0
+            || (keys.hasOnly(['f' + string(r)])
+                && (!(string(r) in rounds) || request.time.toMillis() < rounds[string(r)]));
+        }
         allow read: if signedIn();
         allow create: if signedIn() && request.auth.uid == uid;
-        // El cierre del mercado actualiza el plantel de quien gana una puja.
-        allow update: if isMember();
+        // Cada uno edita solo lo suyo; los fichajes de las 20:00 los aplica el servidor.
+        allow update: if signedIn() && request.auth.uid == uid && isMember()
+          && request.resource.data.get('firstRound', 0) == resource.data.get('firstRound', 0)
+          && lineupOk();
         allow delete: if signedIn() && request.auth.uid == uid;
       }
       match /bids/{uid} {
