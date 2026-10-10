@@ -208,6 +208,8 @@ for (const [id, m] of cand) {
 // Inicio de cada fecha = primer partido no postergado. Las reglas de seguridad lo usan para bloquear el 11.
 const rounds = {};
 for (const m of Object.values(cal.matches)) if (m.r && m.k && m.st !== 'post') rounds[m.r] = Math.min(rounds[m.r] || Infinity, m.k);
+// Partidos reprogramados de una fecha vieja no reabren esa fecha: una fecha arranca a más tardar cuando arranca alguna posterior.
+{ let lo = Infinity; for (const r of Object.keys(rounds).map(Number).sort((a, b) => b - a)) { lo = Math.min(lo, rounds[r]); rounds[r] = lo; } }
 if (JSON.stringify(rounds) !== JSON.stringify(cal.rounds || {})) { cal.rounds = rounds; changed = true; }
 const prox = Object.entries(rounds).filter(([, k]) => k > now).sort((a, b) => a[1] - b[1]).slice(0, 2);
 if (prox.length) note('Próximos cierres de 11: ' + prox.map(([r, k]) => `fecha ${r} ${new Date(k - 3 * 3600e3).toISOString().slice(0, 16).replace('T', ' ')} (hora Argentina)`).join(' · '));

@@ -79,7 +79,10 @@ function roundsInfo() {
   const R = {};
   for (const m of ms) { const r = (R[m.r] = R[m.r] || { r: m.r, list: [], first: Infinity }); r.list.push(m); if (m.k && m.st !== 'post') r.first = Math.min(r.first, m.k); }
   for (const r of Object.values(R)) if (calendar?.rounds?.[r.r]) r.first = calendar.rounds[r.r];
-  return Object.values(R).sort((a, b) => a.r - b.r);
+  const out = Object.values(R).sort((a, b) => a.r - b.r);
+  // Un partido reprogramado de una fecha vieja no reabre esa fecha
+  let lo = Infinity; for (let i = out.length - 1; i >= 0; i--) { lo = Math.min(lo, out[i].first); out[i].first = lo; }
+  return out;
 }
 function openFecha() { const rs = roundsInfo(); const now = Date.now(); const nx = rs.find(r => r.first > now && r.list.some(m => m.st !== 'done')); return nx ? nx.r : (rs.length ? rs[rs.length - 1].r + 1 : 1); }
 function roundStart(n) { const r = roundsInfo().find(x => x.r === n); return r && isFinite(r.first) ? r.first : null; }
